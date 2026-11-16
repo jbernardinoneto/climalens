@@ -1,7 +1,7 @@
 // src/db/db.js
 import Dexie from 'dexie';
 
-export const db = new Dexie('AtmosLabDatabase');
+export const db = new Dexie('ClimaLensDatabase');
 
 // O 'id' com '++' significa que será auto-incrementado.
 db.version(1).stores({
