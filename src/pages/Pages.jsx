@@ -12,9 +12,9 @@ const BlankPage = ({ titleKey }) => {
 };
 
 export const Home = () => <BlankPage titleKey="menu.home" />;
-export const Dados = () => <BlankPage titleKey="menu.data" />;
-export const Limpeza = () => <BlankPage titleKey="menu.clean" />;
-export const Categorizacao = () => <BlankPage titleKey="menu.categorize" />;
-export const Processamento = () => <BlankPage titleKey="menu.process" />;
-export const Resultados = () => <BlankPage titleKey="menu.results" />;
+//export const Dados = () => <BlankPage titleKey="menu.data" />;
+//export const Limpeza = () => <BlankPage titleKey="menu.clean" />;
+//export const Categorizacao = () => <BlankPage titleKey="menu.categorize" />;
+//export const Processamento = () => <BlankPage titleKey="menu.process" />;
+//export const Resultados = () => <BlankPage titleKey="menu.results" />;
 export const Configuracoes = () => <BlankPage titleKey="menu.settings" />;

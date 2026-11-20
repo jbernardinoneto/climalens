@@ -1,9 +1,11 @@
 import { HashRouter, Routes, Route } from 'react-router-dom';
 import Layout from './components/Layout';
-import { 
-  Home, Dados, Limpeza, Categorizacao, 
-  Processamento, Resultados, Configuracoes 
-} from './pages/Pages';
+import { Home, Configuracoes } from './pages/Pages';
+import Dados from './pages/Dados';
+import Limpeza from './pages/Limpeza';
+import Categorizacao from './pages/Categorizacao';
+import Processamento from './pages/Processamento';
+import Resultados from './pages/Resultados';
 
 function App() {
   return (
