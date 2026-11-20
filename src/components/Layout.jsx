@@ -22,19 +22,21 @@ export default function Layout() {
   ];
 
   return (
-    <div className="flex h-screen w-full bg-slate-50 font-sans text-slate-900 overflow-hidden">
+    <div className="flex h-screen w-full bg-slate-50 font-sans text-slate-900 overflow-hidden">      
       {/* Sidebar Retrátil */}
       <aside 
-        className={`${isExpanded ? 'w-64' : 'w-20'} 
+        className={`${isExpanded ? 'w-64' : 'w-20'}
         bg-white border-r border-slate-200 transition-all duration-300 ease-in-out flex flex-col z-20`}
       >
+        <div className="mx-auto block">
+          <a href="/" alt="Início">
+            <img src="public/logo.png" alt="ClimaLens" width="150" height="170"></img>
+          </a>
+        </div>
         {/* Header da Sidebar */}
         <div className="h-16 flex items-center justify-between px-4 border-b border-slate-100">
-          <div className={`flex items-center overflow-hidden transition-all duration-300 ${isExpanded ? 'w-full opacity-100' : 'w-0 opacity-0'}`}>
-            
-            <span className="font-semibold text-lg tracking-tight">ClimaLens</span>
-          </div>
-          
+          <div className={`flex items-center overflow-hidden transition-all duration-300 ${isExpanded ? 'w-full opacity-100' : 'w-0 opacity-0'}`}>            
+          </div>        
           <button 
             onClick={() => setIsExpanded(!isExpanded)}
             className={`p-2 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors ${
@@ -46,7 +48,7 @@ export default function Layout() {
         </div>
 
         {/* Navegação Principal */}
-        <nav className="flex-1 px-3 py-6 space-y-1.5 overflow-y-auto">
+        <nav className="flex-1 px-3 py-6 space-y-1.5 overflow-y-auto overflow-x-hidden">
           {menuItems.map((item) => (
             <NavLink
               key={item.path}
@@ -78,9 +80,22 @@ export default function Layout() {
             </NavLink>
           ))}
         </nav>
-
+        {/* Copyright / Créditos */}
+          <div className={`text-xs text-gray-500 text-center transition-all duration-300 overflow-hidden ${
+            isExpanded ? 'opacity-100 max-h-40 px-4 py-2 block' : 'opacity-0 max-h-0 hidden'
+            }`}>          
+            <div className="flex items-center justify-center gap-2">  
+              <a href="http://www.uft.edu.br/" title="UFT" className="p-2 hover:bg-slate-100 rounded-lg transition-colors">
+                <img src="public/uft.png" alt="Universidade Federal do Tocantins" width="30" />
+              </a>
+              <a href="https://profiap.org.br/" title="Profiap" className="p-2 hover:bg-slate-100 rounded-lg transition-colors">
+                <img src="public/profiap.png" alt="Programa de Mestrado Profissional em Administração Pública" width="50" />
+              </a>
+            </div>
+            <a>© 2026 | Produto Técnico Tecnológico desenvolvido no Mestrado Profissional em Administração Pública (PROFIAP/UFT). <a href='https://github.com/jbernardinoneto/climalens'>Código aberto sob a Licença MIT</a>. Jorge Bernardino de Sousa Neto</a>
+          </div>
         {/* Fixar Configurações no rodapé */}
-        <div className="p-3 border-t border-slate-100">
+        <div className="p-3 border-t border-slate-100">          
           <NavLink
             to="/configuracoes"
             className={({ isActive }) =>
