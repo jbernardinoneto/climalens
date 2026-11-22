@@ -8,7 +8,7 @@ const resources = {
         home: "Início",
         data: "Dados",
         clean: "Limpeza de Dados",
-        categorize: "Categorização",
+        categorize: "Variáveis",
         process: "Processamento",
         results: "Resultados",
         settings: "Configurações"

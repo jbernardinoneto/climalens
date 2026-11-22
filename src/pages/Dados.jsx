@@ -11,6 +11,10 @@ export default function Dados() {
   const [nomeRepositorio, setNomeRepositorio] = useState('');
   const [arquivo, setArquivo] = useState(null);
   const [carregando, setCarregando] = useState(false);
+  
+  // Estados para edição inline do título do repositório
+  const [editandoId, setEditandoId] = useState(null);
+  const [novoNome, setNovoNome] = useState("");
 
   // useLiveQuery atualiza a lista automaticamente sempre que o banco muda
   const datasets = useLiveQuery(() => db.datasets.toArray());
@@ -96,6 +100,14 @@ export default function Dados() {
     }
   };
 
+  // Função para gravar o novo nome do repositório no IndexedDB
+  const salvarNovoNome = async (id, nomeOriginal) => {
+    if (novoNome.trim() !== "" && novoNome.trim() !== nomeOriginal) {
+      await db.datasets.update(id, { nome: novoNome.trim() });
+    }
+    setEditandoId(null);
+  };
+
   return (
     <div className="space-y-8">
       <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
@@ -114,8 +126,8 @@ export default function Dados() {
               type="text"
               value={nomeRepositorio}
               onChange={(e) => setNomeRepositorio(e.target.value)}
-              placeholder="Ex: Pesquisa TRE-TO 2026"
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+              placeholder="Ex: Pesquisa de Clima Organizacional 2026"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 outline-none transition-all"
             />
           </div>
           
@@ -128,14 +140,14 @@ export default function Dados() {
               type="file"
               accept=".csv, .xlsx"
               onChange={(e) => setArquivo(e.target.files[0])}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white file:mr-4 file:py-1 file:px-3 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white file:mr-4 file:py-1 file:px-3 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-cyan-50 file:text-cyan-700 hover:file:bg-cyan-100"
             />
           </div>
 
           <button
             onClick={handleSalvarDados}
             disabled={!nomeRepositorio.trim() || !arquivo || carregando}
-            className="px-6 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+            className="px-6 py-2 bg-[#0a2540] text-white font-medium rounded-lg hover:bg-opacity-90 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
           >
             <FileUp size={20} />
             {carregando ? 'Processando...' : 'Salvar'}
@@ -159,9 +171,32 @@ export default function Dados() {
             {datasets.map((dataset) => (
               <div key={dataset.id} className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm hover:shadow-md transition-shadow flex flex-col justify-between">
                 <div>
-                  <h3 className="font-bold text-gray-800 text-lg truncate" title={dataset.nome}>
-                    {dataset.nome}
-                  </h3>
+                  {editandoId === dataset.id ? (
+                    <input
+                      type="text"
+                      value={novoNome}
+                      onChange={(e) => setNovoNome(e.target.value)}
+                      onBlur={() => salvarNovoNome(dataset.id, dataset.nome)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') salvarNovoNome(dataset.id, dataset.nome);
+                        if (e.key === 'Escape') setEditandoId(null);
+                      }}
+                      autoFocus
+                      className="w-full font-bold text-gray-800 text-lg bg-transparent border-b-2 border-[#00b4d8] outline-none focus:ring-0 px-0 py-0"
+                    />
+                  ) : (
+                    <h3 
+                      className="font-bold text-gray-800 text-lg truncate cursor-pointer hover:text-[#00b4d8] transition-colors"
+                      title="Clique para renomear"
+                      onClick={() => {
+                        setEditandoId(dataset.id);
+                        setNovoNome(dataset.nome);
+                      }}
+                    >
+                      {dataset.nome}
+                    </h3>
+                  )}
+
                   <p className="text-sm text-gray-500 mt-1">
                     {dataset.dados.length} registros
                   </p>

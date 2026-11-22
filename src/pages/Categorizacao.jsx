@@ -1,367 +1,318 @@
-import { useState } from 'react';
-import { useTranslation } from 'react-i18next';
+import { useState, useEffect } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/db';
-import { Tags, ArrowLeft, Save, FileSpreadsheet, Plus, Trash2, ArrowRight, Settings2 } from 'lucide-react';
-
-const DEMOGRAFICAS_PADRAO = [
-  "Carimbo de data/hora", "Idade", "Sexo", 
-  "Unidade de lotação", "Tempo de serviço no Tribunal", "Situação Funcional"
-];
+import { ListFilter, ArrowLeft, Save, Settings2, X, AlertCircle, Plus, Trash2, Tags } from 'lucide-react';
 
 const DIMENSOES_PADRAO = [
-  "Estrutura", "Responsabilidade", "Recompensa", 
-  "Desafio", "Relacionamento", "Cooperação", 
-  "Padrões", "Conflito", "Identidade"
+    "Estrutura", "Responsabilidade", "Reconhecimento", 
+    "Padrões", "Apoio", "Comprometimento" 
 ];
 
 export default function Categorizacao() {
-  const { t } = useTranslation();
   const datasets = useLiveQuery(() => db.datasets.toArray());
-  
-  // Controle de Navegação: 'lista' | 'configuracao' | 'mapeamento'
-  const [fase, setFase] = useState('lista'); 
   const [datasetAtivo, setDatasetAtivo] = useState(null);
+  const [mapeamento, setMapeamento] = useState({});
+  const [colunas, setColunas] = useState([]);
   
-  // Estado da Configuração
-  const [demograficas, setDemograficas] = useState([]);
-  const [dimensoes, setDimensoes] = useState([]);
-  const [novaDemo, setNovaDemo] = useState('');
-  const [novaDim, setNovaDim] = useState('');
+  // Estados do Modal de Agrupamento
+  const [modalAberto, setModalAberto] = useState(false);
+  const [colunaEmEdicao, setColunaEmEdicao] = useState(null);
+  const [valoresUnicos, setValoresUnicos] = useState([]);
+
+  // Estados do Modal de Dimensões
+  const [modalDimensoesAberto, setModalDimensoesAberto] = useState(false);
+  const [novaDimensao, setNovaDimensao] = useState("");
   
-  // Estado do Mapeamento
-  const [mapeamento, setMapeamento] = useState({}); // { [nomeColuna]: { tipo: 'demo'|'dim', valor: 'Idade' } }
-  const [salvando, setSalvando] = useState(false);
+  // Carrega as dimensões do LocalStorage (Global) ou usa o Padrão
+  const [dimensoes, setDimensoes] = useState(() => {
+    const salvas = localStorage.getItem('climalens_dimensoes_v2');
+    return salvas ? JSON.parse(salvas) : DIMENSOES_PADRAO;
+  });
 
-  // Inicializa o dataset, carregando configurações anteriores ou padrões
-  const abrirDataset = (dataset) => {
-    setDatasetAtivo(dataset);
-    
-    if (dataset.estadoCategorizacao) {
-      setDemograficas(dataset.estadoCategorizacao.demograficas || DEMOGRAFICAS_PADRAO);
-      setDimensoes(dataset.estadoCategorizacao.dimensoes || DIMENSOES_PADRAO);
-      setMapeamento(dataset.estadoCategorizacao.mapeamento || {});
-    } else {
-      setDemograficas(DEMOGRAFICAS_PADRAO);
-      setDimensoes(DIMENSOES_PADRAO);
-      setMapeamento({});
+  // Salva dimensões no LocalStorage sempre que mudarem (para novos datasets)  
+  useEffect(() => {
+    if (datasetAtivo && datasetAtivo.dados.length > 0) {
+      const todasColunas = Object.keys(datasetAtivo.dados[0]);
+      const estadoColunas = datasetAtivo.estadoLimpeza?.colunasAtivas || {};
+      const colunasValidas = todasColunas.filter(coluna => estadoColunas[coluna] !== false);
+      setColunas(colunasValidas);
+      
+      // 1. Carrega o mapeamento
+      const mapaSalvo = datasetAtivo.mapeamento || datasetAtivo.estadoCategorizacao?.mapeamento || {};
+      setMapeamento(mapaSalvo);
+
+      // 2. RECUPERAÇÃO AUTOMÁTICA (SELF-HEALING)
+      // Captura dimensões previamente salvas na lista oficial
+      const dimensoesSalvas = datasetAtivo.estadoCategorizacao?.dimensoes || [];
+      
+      // Varre o mapeamento para extrair dimensões que estão associadas, mas que possam estar fora da lista
+      const dimensoesEmUso = Object.values(mapaSalvo)
+        .filter(m => m.tipo === 'dim' && m.valor)
+        .map(m => m.valor);
+
+      // Une as dimensões padrão, as salvas e as em uso, removendo qualquer duplicidade
+      const dimensoesUnificadas = [...new Set([...DIMENSOES_PADRAO, ...dimensoesSalvas, ...dimensoesEmUso])];
+      
+      setDimensoes(dimensoesUnificadas);
     }
-    
-    setFase('configuracao');
+  }, [datasetAtivo]);
+
+  const handleMapeamento = (coluna, tipo, valor = null) => {
+    setMapeamento(prev => ({
+      ...prev,
+      [coluna]: { tipo, valor, agrupamentos: prev[coluna]?.agrupamentos || {} }
+    }));
   };
 
-  // Funções de Edição das Variáveis
-  const adicionarItem = (tipo) => {
-    if (tipo === 'demo' && novaDemo.trim()) {
-      if (!demograficas.includes(novaDemo.trim())) setDemograficas([...demograficas, novaDemo.trim()]);
-      setNovaDemo('');
-    } else if (tipo === 'dim' && novaDim.trim()) {
-      if (!dimensoes.includes(novaDim.trim())) setDimensoes([...dimensoes, novaDim.trim()]);
-      setNovaDim('');
-    }
-  };
-
-  const removerItem = (tipo, valor) => {
-    if (tipo === 'demo') setDemograficas(demograficas.filter(d => d !== valor));
-    else setDimensoes(dimensoes.filter(d => d !== valor));
-    
-    // Remove do mapeamento se estiver em uso
-    const novoMap = { ...mapeamento };
-    Object.keys(novoMap).forEach(col => {
-      if (novoMap[col]?.valor === valor) delete novoMap[col];
-    });
-    setMapeamento(novoMap);
-  };
-
-  // Prepara os dados filtrados (Ignora linhas e colunas desmarcadas na Limpeza)
-  const getColunasAtivas = () => {
-    if (!datasetAtivo) return [];
-    const todasColunas = Object.keys(datasetAtivo.dados[0] || {});
-    const estadoLimp = datasetAtivo.estadoLimpeza?.colunasAtivas || {};
-    return todasColunas.filter(col => estadoLimp[col] !== false);
-  };
-
-  const getLinhasAtivas = () => {
-    if (!datasetAtivo) return [];
-    const estadoLimp = datasetAtivo.estadoLimpeza?.linhasAtivas || {};
-    return datasetAtivo.dados.filter((_, index) => estadoLimp[index] !== false);
-  };
-
-  const handleSelectChange = (coluna, selectedValue) => {
-    if (!selectedValue) {
-      const novoMap = { ...mapeamento };
-      delete novoMap[coluna];
-      setMapeamento(novoMap);
-      return;
-    }
-
-    const [tipo, ...rest] = selectedValue.split('_');
-    const valor = rest.join('_'); // Recria o texto caso tenha underline no nome
-    setMapeamento(prev => ({ ...prev, [coluna]: { tipo, valor } }));
-  };
-
-  const salvarCategorizacao = async () => {
-    setSalvando(true);
-    try {
-      await db.datasets.update(datasetAtivo.id, {
-        estadoCategorizacao: {
-          demograficas,
-          dimensoes,
-          mapeamento
-        }
+  // Salva o Mapeamento E AS DIMENSÕES no banco de dados
+  const salvarMapeamento = async () => {
+    if (datasetAtivo) {
+      await db.datasets.update(datasetAtivo.id, { 
+        mapeamento, 
+        estadoCategorizacao: { 
+          mapeamento, 
+          dimensoes // <-- CORREÇÃO: As dimensões agora são salvas junto com o mapa!
+        } 
       });
-      alert("Categorização salva com sucesso!");
-      setFase('lista');
-      setDatasetAtivo(null);
-    } catch (error) {
-      console.error("Erro ao salvar:", error);
-      alert("Erro ao salvar a categorização.");
-    } finally {
-      setSalvando(false);
+      alert("Mapeamento e dimensões salvos com sucesso!");
     }
   };
 
-  // Lógica de validação do botão salvar
-  const colunasAtivas = getColunasAtivas();
-  const todasMapeadas = colunasAtivas.length > 0 && colunasAtivas.every(col => mapeamento[col]);
+  // --- Funções de Agrupamento de Respostas ---
+  const abrirModalAgrupamento = (coluna) => {
+    const unicos = [...new Set(datasetAtivo.dados.map(item => item[coluna]).filter(Boolean))];
+    setValoresUnicos(unicos.sort());
+    setColunaEmEdicao(coluna);
+    setModalAberto(true);
+  };
 
-  // VISÃO 1: Lista de Repositórios
-  if (fase === 'lista') {
+  const atualizarAgrupamento = (valorOriginal, novoValor) => {
+    setMapeamento(prev => {
+      const mapeamentoAtual = { ...prev };
+      if (!mapeamentoAtual[colunaEmEdicao]) return prev;
+      const agrupamentosAtuais = { ...(mapeamentoAtual[colunaEmEdicao].agrupamentos || {}) };
+      
+      if (novoValor.trim() === "") delete agrupamentosAtuais[valorOriginal]; 
+      else agrupamentosAtuais[valorOriginal] = novoValor.trim(); 
+
+      mapeamentoAtual[colunaEmEdicao].agrupamentos = agrupamentosAtuais;
+      return mapeamentoAtual;
+    });
+  };
+
+  // --- Funções de Gestão de Dimensões ---
+  const adicionarDimensao = () => {
+    const nome = novaDimensao.trim();
+    if (nome && !dimensoes.includes(nome)) {
+      setDimensoes([...dimensoes, nome]);
+      setNovaDimensao("");
+    }
+  };
+
+  const removerDimensao = (dimParaRemover) => {
+    if (window.confirm(`Tem certeza que deseja apagar a dimensão "${dimParaRemover}"? As colunas associadas a ela perderão o mapeamento.`)) {
+      setDimensoes(dimensoes.filter(d => d !== dimParaRemover));
+      
+      // Limpa o mapeamento das colunas que usavam esta dimensão
+      setMapeamento(prev => {
+        const novoMap = { ...prev };
+        Object.keys(novoMap).forEach(col => {
+          if (novoMap[col].tipo === 'dim' && novoMap[col].valor === dimParaRemover) {
+            novoMap[col] = { tipo: '', valor: null, agrupamentos: novoMap[col].agrupamentos };
+          }
+        });
+        return novoMap;
+      });
+    }
+  };
+
+  if (!datasetAtivo) {
     return (
       <div className="space-y-8">
         <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
-          <Tags className="text-blue-600" /> {t('menu.categorize', 'Categorização')}
+          <Tags className="text-blue-600" /> Definição de Variáveis
         </h1>
-        <p className="text-gray-600">
-          Defina as dimensões do clima e associe cada coluna do seu repositório a uma variável demográfica ou quantitativa.
-        </p>
-
-        {!datasets ? (
-          <p className="text-gray-500">Carregando...</p>
-        ) : datasets.length === 0 ? (
-          <div className="text-center py-10 bg-white border border-gray-200 rounded-xl border-dashed">
-            <FileSpreadsheet className="mx-auto h-12 w-12 text-gray-400 mb-3" />
-            <p className="text-gray-500">Nenhum repositório encontrado.</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {datasets.map((dataset) => (
-              <div 
-                key={dataset.id} 
-                onClick={() => abrirDataset(dataset)}
-                className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm hover:shadow-md hover:border-blue-300 transition-all cursor-pointer group flex flex-col justify-between"
-              >
-                <div>
-                  <h3 className="font-bold text-gray-800 text-lg truncate group-hover:text-blue-600">
-                    {dataset.nome}
-                  </h3>
-                  <div className="mt-2 text-sm text-gray-500">
-                    {dataset.estadoCategorizacao ? (
-                      <span className="inline-flex items-center px-2 py-1 rounded-md bg-green-50 text-green-700 border border-green-200">
-                        Categorizado
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center px-2 py-1 rounded-md bg-amber-50 text-amber-700 border border-amber-200">
-                        Pendente
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <div className="mt-4 pt-3 border-t border-gray-100 flex items-center text-blue-600 text-sm font-medium">
-                  Configurar variáveis <ArrowRight size={16} className="ml-1" />
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // VISÃO 2: Configuração das Variáveis
-  if (fase === 'configuracao') {
-    return (
-      <div className="space-y-6">
-        <div className="flex items-center justify-between border-b border-gray-200 pb-4">
-          <div className="flex items-center gap-4">
-            <button 
-              onClick={() => { setFase('lista'); setDatasetAtivo(null); }}
-              className="p-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors flex items-center gap-2"
-            >
-              <ArrowLeft size={20} /> Voltar
-            </button>
-            <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
-              <Settings2 className="text-blue-600" /> Configurar Variáveis: {datasetAtivo.nome}
-            </h1>
-          </div>
-          
-          <button 
-            onClick={() => setFase('mapeamento')}
-            className="px-6 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
-          >
-            Avançar para Mapeamento <ArrowRight size={20} />
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          {/* Card Demográficas */}
-          <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
-            <h2 className="text-lg font-bold text-gray-800 mb-4">Variáveis Demográficas (Qualitativas)</h2>
-            <div className="flex gap-2 mb-4">
-              <input 
-                type="text" 
-                value={novaDemo}
-                onChange={(e) => setNovaDemo(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && adicionarItem('demo')}
-                placeholder="Nova demográfica..."
-                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-              />
-              <button 
-                onClick={() => adicionarItem('demo')}
-                className="p-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
-              >
-                <Plus size={20} />
-              </button>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {datasets?.map((dataset) => (
+            <div key={dataset.id} onClick={() => setDatasetAtivo(dataset)} className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm hover:shadow-md hover:border-[#00b4d8] transition-all cursor-pointer">
+              <h3 className="font-bold text-[#0a2540] text-lg truncate">{dataset.nome}</h3>
+              <p className="text-sm text-gray-500 mt-2">Mapear colunas e perguntas</p>
             </div>
-            <ul className="space-y-2 max-h-[50vh] overflow-y-auto pr-2">
-              {demograficas.map(demo => (
-                <li key={demo} className="flex justify-between items-center bg-gray-50 px-3 py-2 rounded border border-gray-100">
-                  <span className="text-gray-700 text-sm">{demo}</span>
-                  <button onClick={() => removerItem('demo', demo)} className="text-red-400 hover:text-red-600">
-                    <Trash2 size={16} />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          {/* Card Dimensões */}
-          <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
-            <h2 className="text-lg font-bold text-gray-800 mb-4">Dimensões do Clima (Quantitativas)</h2>
-            <div className="flex gap-2 mb-4">
-              <input 
-                type="text" 
-                value={novaDim}
-                onChange={(e) => setNovaDim(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && adicionarItem('dim')}
-                placeholder="Nova dimensão..."
-                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-              />
-              <button 
-                onClick={() => adicionarItem('dim')}
-                className="p-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
-              >
-                <Plus size={20} />
-              </button>
-            </div>
-            <ul className="space-y-2 max-h-[50vh] overflow-y-auto pr-2">
-              {dimensoes.map(dim => (
-                <li key={dim} className="flex justify-between items-center bg-blue-50 px-3 py-2 rounded border border-blue-100">
-                  <span className="text-blue-800 text-sm font-medium">{dim}</span>
-                  <button onClick={() => removerItem('dim', dim)} className="text-red-400 hover:text-red-600">
-                    <Trash2 size={16} />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
+          ))}
         </div>
       </div>
     );
   }
-
-  // VISÃO 3: Tabela de Mapeamento
-  const linhasFiltradas = getLinhasAtivas();
 
   return (
-    <div className="space-y-6 flex flex-col h-[80vh]">
-      <div className="flex items-center justify-between border-b border-gray-200 pb-4">
+    <div className="space-y-6 pb-12 relative">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-200 pb-4">
         <div className="flex items-center gap-4">
-          <button 
-            onClick={() => setFase('configuracao')}
-            className="p-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors flex items-center gap-2"
-          >
-            <ArrowLeft size={20} /> Voltar
+          <button onClick={() => setDatasetAtivo(null)} className="p-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors">
+            <ArrowLeft size={20} />
           </button>
-          <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
-            <Tags className="text-blue-600" /> Associar Colunas: {datasetAtivo.nome}
-          </h1>
+          <h1 className="text-2xl font-bold text-[#0a2540]">Categorizar: {datasetAtivo.nome}</h1>
         </div>
         
-        <div className="flex items-center gap-4">
-          {!todasMapeadas && (
-            <span className="text-sm text-amber-600 font-medium bg-amber-50 px-3 py-1 rounded-full border border-amber-200">
-              Associe todas as colunas para gravar
-            </span>
-          )}
-          <button 
-            onClick={salvarCategorizacao}
-            disabled={!todasMapeadas || salvando}
-            className="px-6 py-2 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
-          >
-            <Save size={20} /> {salvando ? 'Gravando...' : 'Gravar Associações'}
+        <div className="flex items-center gap-3">
+          <button onClick={() => setModalDimensoesAberto(true)} className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 font-medium rounded-lg hover:bg-gray-200 transition-colors shadow-sm">
+            <Tags size={18} /> Dimensões
+          </button>
+          <button onClick={salvarMapeamento} className="flex items-center gap-2 px-6 py-2 bg-[#0a2540] text-white font-medium rounded-lg hover:bg-opacity-90 transition-colors shadow-sm">
+            <Save size={18} /> Salvar Mapeamento
           </button>
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto bg-white border border-gray-200 rounded-xl shadow-sm">
-        <table className="w-full text-sm text-left whitespace-nowrap">
-          <thead className="text-xs text-gray-700 bg-gray-50 sticky top-0 z-10 shadow-sm">
-            <tr>
-              <th className="px-4 py-3 border-b border-r border-gray-200 bg-gray-100 w-12 text-center">#</th>
-              {colunasAtivas.map((col) => {
-                // Recupera o valor atual (ex: demo_Idade ou dim_Estrutura)
-                const valorAtual = mapeamento[col] ? `${mapeamento[col].tipo}_${mapeamento[col].valor}` : '';
-                const isMapeada = !!mapeamento[col];
-
-                return (
-                  <th key={col} className={`px-4 py-3 border-b border-gray-200 min-w-[200px] align-top ${isMapeada ? 'bg-blue-50/50' : 'bg-amber-50/50'}`}>
-                    <div className="font-bold text-gray-800 mb-2 truncate" title={col}>{col}</div>
-                    <select 
-                      value={valorAtual}
-                      onChange={(e) => handleSelectChange(col, e.target.value)}
-                      className={`w-full text-xs p-1.5 border rounded outline-none ${isMapeada ? 'border-blue-300 bg-white text-blue-800' : 'border-amber-300 bg-white text-gray-600'}`}
-                    >
-                      <option value="">-- Não associada --</option>
-                      <optgroup label="Dados Demográficos">
-                        {demograficas.map(demo => (
-                          <option key={`demo_${demo}`} value={`demo_${demo}`}>{demo}</option>
-                        ))}
-                      </optgroup>
-                      <optgroup label="Dimensões do Clima">
-                        {dimensoes.map(dim => (
-                          <option key={`dim_${dim}`} value={`dim_${dim}`}>{dim}</option>
-                        ))}
-                      </optgroup>
-                    </select>
-                  </th>
-                );
-              })}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <table className="w-full text-left border-collapse">
+          <thead>
+            <tr className="bg-gray-50 border-b border-gray-200">
+              <th className="p-4 font-semibold text-gray-700">Coluna Original (Planilha)</th>
+              <th className="p-4 font-semibold text-gray-700">Classificação</th>
+              <th className="p-4 font-semibold text-gray-700 w-48">Ações Avançadas</th>
             </tr>
           </thead>
           <tbody>
-            {linhasFiltradas.map((linha, index) => (
-              <tr key={index} className="border-b border-gray-100 hover:bg-gray-50">
-                <td className="px-4 py-2 border-r border-gray-200 text-center text-gray-400 bg-gray-50 sticky left-0">
-                  {index + 1}
-                </td>
-                {colunasAtivas.map((col) => (
-                  <td key={col} className="px-4 py-2 text-gray-700">
-                    {linha[col]}
+            {colunas.map((coluna) => {
+              const mapInfo = mapeamento[coluna] || { tipo: '' };
+              const isDemo = mapInfo.tipo === 'demo';
+              
+              return (
+                <tr key={coluna} className="border-b border-gray-100 hover:bg-slate-50 transition-colors">
+                  <td className="p-4 text-gray-800 font-medium truncate max-w-md" title={coluna}>{coluna}</td>
+                  <td className="p-4">
+                    <select
+                      value={mapInfo.tipo === 'dim' ? `dim-${mapInfo.valor}` : mapInfo.tipo}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val.startsWith('dim-')) handleMapeamento(coluna, 'dim', val.replace('dim-', ''));
+                        else handleMapeamento(coluna, val);
+                      }}
+                      className={`w-full p-2 border rounded-lg outline-none transition-colors ${
+                        isDemo ? 'bg-purple-50 border-purple-200 text-purple-700' :
+                        mapInfo.tipo === 'dim' ? 'bg-[#00b4d8]/10 border-[#00b4d8]/30 text-[#0a2540]' :
+                        'bg-gray-50 border-gray-200 text-gray-500'
+                      }`}
+                    >
+                      <option value="" disabled>Selecione uma classificação...</option>
+                      <option value="demo">Variável Demográfica</option>
+                      <optgroup label="Dimensões do Clima">
+                        {dimensoes.map(dim => (
+                          <option key={dim} value={`dim-${dim}`}>{dim}</option>
+                        ))}
+                      </optgroup>
+                    </select>
                   </td>
-                ))}
-              </tr>
-            ))}
-            {linhasFiltradas.length === 0 && (
-              <tr>
-                <td colSpan={colunasAtivas.length + 1} className="text-center py-8 text-gray-500">
-                  Nenhuma linha válida encontrada para exibição. Verifique a etapa de Limpeza.
-                </td>
-              </tr>
-            )}
+                  <td className="p-4 text-center">
+                    {isDemo && (
+                      <button 
+                        onClick={() => abrirModalAgrupamento(coluna)}
+                        className="flex items-center justify-center gap-2 px-3 py-1.5 w-full bg-purple-100 hover:bg-purple-200 text-purple-700 rounded-lg text-sm font-medium transition-colors"
+                      >
+                        <Settings2 size={16} /> 
+                        {Object.keys(mapInfo.agrupamentos || {}).length > 0 ? 'Editar Regras' : 'Agrupar'}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
+
+      {/* MODAL DE GERENCIAMENTO DE DIMENSÕES */}
+      {modalDimensoesAberto && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[90vh] flex flex-col overflow-hidden">
+            <div className="p-5 border-b border-gray-200 flex justify-between items-center bg-gray-50">
+              <h3 className="text-lg font-bold text-[#0a2540] flex items-center gap-2">
+                <Tags size={20} className="text-[#00b4d8]" /> Gerenciar Dimensões
+              </h3>
+              <button onClick={() => setModalDimensoesAberto(false)} className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-200 rounded-lg transition-colors">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto flex-1 bg-white">
+              <div className="flex gap-2 mb-6">
+                <input
+                  type="text"
+                  placeholder="Nova dimensão (ex: Inovação)"
+                  value={novaDimensao}
+                  onChange={(e) => setNovaDimensao(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && adicionarDimensao()}
+                  className="flex-1 p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#00b4d8] outline-none text-sm"
+                />
+                <button 
+                  onClick={adicionarDimensao}
+                  disabled={!novaDimensao.trim()}
+                  className="px-4 py-2 bg-[#00b4d8] text-white font-medium rounded-lg hover:bg-opacity-90 disabled:opacity-50 transition-colors flex items-center gap-1"
+                >
+                  <Plus size={18} /> Adicionar
+                </button>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Dimensões Disponíveis</p>
+                {dimensoes.map((dim) => (
+                  <div key={dim} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-100">
+                    <span className="font-medium text-gray-700">{dim}</span>
+                    <button 
+                      onClick={() => removerDimensao(dim)}
+                      className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                      title="Apagar dimensão"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE AGRUPAMENTO */}
+      {modalAberto && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+            <div className="p-5 border-b border-gray-200 flex justify-between items-center bg-gray-50">
+              <div>
+                <h3 className="text-lg font-bold text-[#0a2540]">Agrupar Respostas</h3>
+                <p className="text-sm text-gray-500">Variável: <span className="font-semibold text-purple-600">{colunaEmEdicao}</span></p>
+              </div>
+              <button onClick={() => setModalAberto(false)} className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-200 rounded-lg transition-colors">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-5 overflow-y-auto flex-1">
+              <div className="flex items-start gap-3 p-3 bg-blue-50 text-blue-800 rounded-lg mb-6 text-sm">
+                <AlertCircle size={20} className="shrink-0 mt-0.5" />
+                <p>Escreva o novo nome ao lado da resposta original. Respostas com mesmo nome são unificadas.</p>
+              </div>
+              <div className="space-y-3">
+                {valoresUnicos.map((valorOriginal) => {
+                  const valorAtual = mapeamento[colunaEmEdicao]?.agrupamentos?.[valorOriginal] || '';
+                  return (
+                    <div key={valorOriginal} className="flex items-center gap-4 bg-gray-50 p-3 rounded-lg border border-gray-100">
+                      <div className="flex-1 truncate font-medium text-gray-700" title={valorOriginal}>{valorOriginal}</div>
+                      <div className="text-gray-400 shrink-0">➜</div>
+                      <div className="flex-1">
+                        <input type="text" placeholder="Manter original" value={valorAtual} onChange={(e) => atualizarAgrupamento(valorOriginal, e.target.value)} className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none text-sm" />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="p-4 border-t border-gray-200 bg-gray-50 flex justify-end">
+              <button onClick={() => setModalAberto(false)} className="px-6 py-2 bg-[#0a2540] text-white font-medium rounded-lg hover:bg-opacity-90">Concluir</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,4 +1,3 @@
-// src/workers/pyodideWorker.js
 import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.mjs";
 
 let motorPyodide = null; 
@@ -11,14 +10,13 @@ self.onmessage = async (event) => {
       const { dados, mapeamento } = payload;
 
       if (!motorPyodide) {
-        self.postMessage({ type: 'STATUS', mensagem: 'A iniciar ambiente analítico...', progresso: 10 });
+        self.postMessage({ type: 'STATUS', mensagem: 'Iniciando ambiente analítico...', progresso: 10 });
         motorPyodide = await loadPyodide();
-        
-        self.postMessage({ type: 'STATUS', mensagem: 'A carregar Pandas, Numpy e Scikit-Learn...', progresso: 30 });
-        await motorPyodide.loadPackage(["pandas", "numpy", "scipy", "scikit-learn"]);
+        self.postMessage({ type: 'STATUS', mensagem: 'Carregando bibliotecas matemáticas do Python...', progresso: 30 });
+        await motorPyodide.loadPackage(["pandas", "numpy", "scipy"]);
       }
 
-      self.postMessage({ type: 'STATUS', mensagem: 'Passo 1/4: A preparar as 9 Dimensões...', progresso: 50 });
+      self.postMessage({ type: 'STATUS', mensagem: 'Passo 1/3: Processando matrizes de distância...', progresso: 50 });
 
       motorPyodide.globals.set("dados_js", dados);
       motorPyodide.globals.set("mapeamento_js", mapeamento);
@@ -26,23 +24,36 @@ self.onmessage = async (event) => {
       const scriptPython = `
 import pandas as pd
 import numpy as np
-from sklearn.metrics import silhouette_score
-from scipy.stats import kruskal, chi2_contingency
+from scipy.stats import kruskal
 import json
+import random
 
-# 1. Preparação e Agregação de Dados
+# Obriga a matemática a ser 100% idêntica em todos os processamentos
+np.random.seed(42)
+random.seed(42)
+
+# Classe para blindar falhas de conversão Numpy -> JSON
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer): return int(obj)
+        if isinstance(obj, np.floating): return float(obj)
+        if isinstance(obj, np.ndarray): return obj.tolist()
+        return super(NumpyEncoder, self).default(obj)
+
+# 1. Preparação de Dados
 dados_raw = dados_js.to_py()
 map_dict = mapeamento_js.to_py()
 df = pd.DataFrame(dados_raw)
 
 total_populacao = len(df)
-
 colunas_demo = []
 dim_map = {} 
 
-for col, info in map_dict.items():
+for col, info in map_dict.items():  
     if info['tipo'] == 'demo':
         colunas_demo.append(col)
+        if 'agrupamentos' in info and info['agrupamentos']:
+            df[col] = df[col].replace(info['agrupamentos'])
     elif info['tipo'] == 'dim':
         dim_nome = info['valor'] 
         if dim_nome not in dim_map:
@@ -50,7 +61,6 @@ for col, info in map_dict.items():
         dim_map[dim_nome].append(col)
 
 todas_colunas_questoes = [col for cols in dim_map.values() for col in cols]
-
 for col in todas_colunas_questoes:
     df[col] = pd.to_numeric(df[col], errors='coerce')
 
@@ -59,16 +69,12 @@ for dim_nome, cols in dim_map.items():
     df[dim_nome] = df[cols].mean(axis=1).round(2)
     colunas_dim_agrupadas.append(dim_nome)
 
-for dim in colunas_dim_agrupadas:
-    media_dimensao_geral = df[dim].mean()
-    df[dim] = df[dim].fillna(media_dimensao_geral)
-
-df = df.dropna(subset=colunas_demo).reset_index(drop=True)
-
+df = df.dropna(subset=colunas_dim_agrupadas)
+df = df.reset_index(drop=True)
 n_samples = len(df)
 n_num = len(colunas_dim_agrupadas)
 
-# 2. Cálculo da Distância (APENAS NAS DIMENSÕES DE CLIMA)
+# 2. Matriz de Distância (Base para PERMANOVA)
 dist_matrix = np.zeros((n_samples, n_samples))
 num_data = df[colunas_dim_agrupadas].values
 
@@ -77,151 +83,130 @@ if n_num > 0:
     ranges[ranges == 0] = 1 
     for i in range(n_num):
         dist_matrix += np.abs(num_data[:, i][:, None] - num_data[:, i]) / ranges[i]
-
 dist_matrix /= n_num
 
-# 3. Algoritmo K-Medoids
-def k_medoids(dist, k, max_iter=50):
-    np.random.seed(42)
-    medoids = np.random.choice(n_samples, k, replace=False)
-    clusters = np.zeros(n_samples)
-    for _ in range(max_iter):
-        old_medoids = np.copy(medoids)
-        clusters = np.argmin(dist[:, medoids], axis=1)
-        for i in range(k):
-            pontos_cluster = np.where(clusters == i)[0]
-            if len(pontos_cluster) > 0:
-                custos = np.sum(dist[np.ix_(pontos_cluster, pontos_cluster)], axis=1)
-                medoids[i] = pontos_cluster[np.argmin(custos)]
-        if np.array_equal(old_medoids, medoids):
-            break
-    return clusters
+def fdr_correction(p_values):
+    n = len(p_values)
+    if n == 0: return []
+    sorted_indices = np.argsort(p_values)
+    sorted_p = np.array(p_values)[sorted_indices]
+    fdr_p = np.minimum.accumulate((sorted_p * n / np.arange(1, n + 1))[::-1])[::-1]
+    fdr_p = np.minimum(fdr_p, 1.0)
+    orig_order_fdr = np.zeros(n)
+    orig_order_fdr[sorted_indices] = fdr_p
+    return orig_order_fdr.tolist()
 
-# 4. Descoberta do K ideal
-best_k = 2
-best_score = -1
-best_labels = None
-max_k = min(10, n_samples - 1) if n_samples > 10 else n_samples - 1
+# 3. Análise Supervisionada (PERMANOVA, PERMDISP e Post-Hoc)
+resultados_demo = {}
 
-for k in range(2, max_k + 1):
-    labels = k_medoids(dist_matrix, k)
-    if len(np.unique(labels)) > 1:
-        score = silhouette_score(dist_matrix, labels, metric='precomputed')
-        if score > best_score:
-            best_score = score
-            best_k = k
-            best_labels = labels
-
-df['Microclima'] = best_labels.astype(int) + 1
-
-# 5. Validação Global: PERMANOVA
-def calc_pseudo_f(dist, labels, k):
-    sst = np.sum(dist ** 2) / n_samples
+for col in colunas_demo:
+    valid_mask = df[col].notna().values # Força a ser Array Numpy para evitar erros de index
+    if sum(valid_mask) < 5: continue
+    
+    labels = df.loc[valid_mask, col].values
+    unique_labels = np.unique(labels)
+    if len(unique_labels) < 2: continue
+    
+    # Recorte seguro da matriz 2D
+    D = dist_matrix[valid_mask][:, valid_mask]
+    n_val = len(labels)
+    k = len(unique_labels)
+    
+    sst = np.sum(D**2) / n_val
     ssw = 0
-    for i in range(k):
-        idx = np.where(labels == i)[0]
+    for g in unique_labels:
+        idx = np.where(labels == g)[0]
         if len(idx) > 0:
-            ssw += np.sum(dist[np.ix_(idx, idx)] ** 2) / len(idx)
+            ssw += np.sum(D[idx][:, idx]**2) / len(idx)
     ssa = sst - ssw
-    if ssw == 0: return 0
-    return (ssa / (k - 1)) / (ssw / (n_samples - k))
-
-f_obs = calc_pseudo_f(dist_matrix, best_labels, best_k)
-perm_count = 0
-n_perms = 99
-for _ in range(n_perms):
-    perm_labels = np.random.permutation(best_labels)
-    if calc_pseudo_f(dist_matrix, perm_labels, best_k) >= f_obs:
-        perm_count += 1
-permanova_p = (perm_count + 1) / (n_perms + 1)
-
-# 6. Validação Específica Clima (Kruskal-Wallis)
-kw_resultados = {}
-for col in colunas_dim_agrupadas:
-    grupos = [df[df['Microclima'] == (i+1)][col].values for i in range(best_k)]
+    r2 = ssa / sst if sst > 0 else 0
+    
+    f_obs = 0 if (ssw == 0 or k == 1 or n_val == k) else (ssa / (k - 1)) / (ssw / (n_val - k))
+    
+    n_perms = 99
+    count_perm = 0
+    for _ in range(n_perms):
+        perm_labels = np.random.permutation(labels)
+        ssw_perm = 0
+        for g in unique_labels:
+            idx = np.where(perm_labels == g)[0]
+            if len(idx) > 0:
+                ssw_perm += np.sum(D[idx][:, idx]**2) / len(idx)
+        ssa_perm = sst - ssw_perm
+        f_perm = 0 if ssw_perm == 0 else (ssa_perm / (k - 1)) / (ssw_perm / (n_val - k))
+        if f_perm >= f_obs: count_perm += 1
+    p_permanova = (count_perm + 1) / (n_perms + 1)
+    
+    z_distances = np.zeros(n_val)
+    for g in unique_labels:
+        idx = np.where(labels == g)[0]
+        n_g = len(idx)
+        if n_g > 1:
+            D_g = D[idx][:, idx]
+            sum_d2_ij = np.sum(D_g**2, axis=1) / n_g
+            sum_d2_jk = np.sum(D_g**2) / (n_g**2)
+            z2 = sum_d2_ij - sum_d2_jk
+            z2[z2 < 0] = 0
+            z_distances[idx] = np.sqrt(z2)
+            
+    z_groups = [z_distances[labels == g] for g in unique_labels]
     try:
-        stat, p_val = kruskal(*grupos)
-        kw_resultados[col] = {'estatistica': round(stat, 3), 'p_valor': round(p_val, 4), 'significativo': bool(p_val < 0.05)}
+        _, p_permdisp = kruskal(*z_groups)
     except:
-        kw_resultados[col] = {'estatistica': None, 'p_valor': None, 'significativo': False}
-
-# 7. NOVO: Criação das Personas (Cartões de Perfil por Microclima)
-perfis_microclimas = {}
-
-for mc in range(1, best_k + 1):
-    df_mc = df[df['Microclima'] == mc]
-    tamanho = len(df_mc)
-    
-    # Termómetro do Clima (Média das dimensões deste grupo)
-    media_geral = df_mc[colunas_dim_agrupadas].mean().mean()
-    if media_geral >= 4.0:
-        classificacao = "Avaliação Positiva"
-    elif media_geral <= 3.2:
-        classificacao = "Avaliação Crítica"
-    else:
-        classificacao = "Avaliação Moderada"
+        p_permdisp = 1.0
         
-    # Maior dor (Dimensão com nota mais baixa neste grupo)
-    medias_dim = df_mc[colunas_dim_agrupadas].mean()
-    dor_nome = medias_dim.idxmin()
-    dor_valor = medias_dim.min()
-    
-    # Perfil Demográfico Dominante
-    perfil = {}
-    for col in colunas_demo:
-        tabela = pd.crosstab(df['Microclima'], df[col])
-        try:
-            chi2, p_val, dof, expected = chi2_contingency(tabela)
-            is_sig = bool(p_val < 0.05)
-            
-            # Categoria mais frequente dentro do microclima
-            cat_dominante = df_mc[col].value_counts().idxmax()
-            perc = (df_mc[col].value_counts().max() / tamanho) * 100
-            
-            perfil[col] = {
-                "categoria": str(cat_dominante),
-                "percentual": round(perc, 1),
-                "significativo": is_sig # Se for true, significa que esta característica difere estatisticamente dos outros grupos
+    post_hoc = {}
+    if p_permanova < 0.05:
+        p_raw = []
+        dims = []
+        for dim in colunas_dim_agrupadas:
+            dim_groups = [df.loc[valid_mask & (df[col] == g), dim].values for g in unique_labels]
+            try:
+                _, p_val = kruskal(*dim_groups)
+                p_raw.append(p_val)
+                dims.append(dim)
+            except:
+                p_raw.append(1.0)
+                dims.append(dim)
+        
+        p_fdr = fdr_correction(p_raw)
+        for dim, pr, pfdr in zip(dims, p_raw, p_fdr):
+            post_hoc[dim] = {
+                "p_raw": float(pr),
+                "p_fdr": float(pfdr),
+                "significativo": bool(pfdr < 0.05)
             }
-        except:
-            pass
-
-    perfis_microclimas[f"Microclima {mc}"] = {
-        "tamanho": int(tamanho),
-        "percentual": round((tamanho / n_samples) * 100, 1),
-        "media_geral": round(media_geral, 2),
-        "classificacao": classificacao,
-        "maior_dor": f"{dor_nome} ({round(dor_valor, 1)})",
-        "perfil": perfil
+            
+    medias_cat = {}
+    for g in unique_labels:
+        medias_cat[str(g)] = df.loc[valid_mask & (df[col] == g), colunas_dim_agrupadas].mean().round(2).to_dict()
+        
+    resultados_demo[col] = {
+        "r2": float(round(r2, 4)),
+        "p_permanova": float(round(p_permanova, 4)),
+        "significativo": bool(p_permanova < 0.05),
+        "p_permdisp": float(round(p_permdisp, 4)),
+        "dispersao_diferente": bool(p_permdisp < 0.05),
+        "post_hoc": post_hoc,
+        "categorias": list(map(str, unique_labels)),
+        "medias": medias_cat
     }
 
-# 8. Retorno
-contagem_clusters = df['Microclima'].value_counts().to_dict()
-df_json = df.replace({np.nan: None})
-
+# 4. Retorno (Usando o encoder blindado)
 resultado = {
     "status": "sucesso",
     "total_populacao": int(total_populacao),
-    "k_ideal": int(best_k),
-    "silhouette_score": round(best_score, 3),
-    "tamanho_microclimas": {f"Microclima {k}": int(v) for k, v in contagem_clusters.items()},
-    "permanova": {
-        "pseudo_f": round(f_obs, 3),
-        "p_valor": round(permanova_p, 4),
-        "significativo": bool(permanova_p < 0.05)
-    },
-    "kruskal_wallis": kw_resultados,
-    "perfis_microclimas": perfis_microclimas,
-    "dados_com_clusters": df_json.to_dict(orient='records')
+    "demografia": resultados_demo,
+    "dimensoes_avaliadas": colunas_dim_agrupadas,
+    "media_geral": df[colunas_dim_agrupadas].mean().round(2).to_dict()
 }
 
-json.dumps(resultado)
+json.dumps(resultado, cls=NumpyEncoder)
       `;
 
-      self.postMessage({ type: 'STATUS', mensagem: 'Passo 3/4: A gerar Cartões de Persona...', progresso: 75 });
+      self.postMessage({ type: 'STATUS', mensagem: 'Passo 2/3: Executando PERMANOVA e testes de dispersão...', progresso: 75 });
       const resultadoJSON = await motorPyodide.runPythonAsync(scriptPython);
-      
-      self.postMessage({ type: 'STATUS', mensagem: 'Passo 4/4: A finalizar cálculos...', progresso: 95 });
+      self.postMessage({ type: 'STATUS', mensagem: 'Passo 3/3: Finalizando relatório...', progresso: 95 });
       self.postMessage({ type: 'SUCESSO', payload: JSON.parse(resultadoJSON) });
 
     } catch (erro) {
