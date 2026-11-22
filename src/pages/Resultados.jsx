@@ -173,6 +173,48 @@ export default function Resultados() {
           </div>
         </div>
       </div>
+      {/* PAINEL DE CONFIABILIDADE DO INSTRUMENTO (ALFA DE CRONBACH) */}
+        {datasetAtivo.estadoProcessamento?.resultadosGerais?.alfa_cronbach && (
+          <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
+            <div className="flex items-center justify-between mb-4 border-b border-gray-100 pb-3">
+              <h3 className="text-lg font-bold text-[#0a2540] flex items-center gap-2">
+                <ShieldCheck className="text-emerald-600" />
+                Confiabilidade do Formulário (Alfa de Cronbach)
+              </h3>
+              <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Metodologia / Validação</span>
+            </div>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+              {Object.entries(datasetAtivo.estadoProcessamento.resultadosGerais.alfa_cronbach).map(([dim, stats]) => {
+                const isNum = typeof stats.alfa === 'number';
+                const alfaVal = isNum ? stats.alfa : 0;
+                
+                // Sistema de Cores: Verde (>0.7), Amarelo (0.6 - 0.7), Vermelho (<0.6)
+                const statusColor = !isNum ? 'text-gray-500 bg-gray-50 border-gray-200' 
+                                 : alfaVal >= 0.7 ? 'text-emerald-700 bg-emerald-50 border-emerald-200' 
+                                 : alfaVal >= 0.6 ? 'text-amber-700 bg-amber-50 border-amber-200'
+                                 : 'text-red-700 bg-red-50 border-red-200';
+                
+                return (
+                  <div key={dim} className={`p-4 rounded-lg border ${statusColor} flex justify-between items-center transition-all hover:shadow-md`}>
+                    <div className="overflow-hidden pr-2">
+                      <p className="font-semibold text-sm truncate" title={dim}>{dim}</p>
+                      <p className="text-xs opacity-75">{stats.itens} perguntas</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-xl font-bold">{isNum ? alfaVal.toFixed(2) : 'N/A'}</p>
+                      {isNum && alfaVal < 0.6 && (
+                        <p className="text-[10px] font-bold uppercase mt-1 flex items-center gap-1">
+                          <AlertTriangle size={12} /> Revisar
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
 
       {variaveisSignificativas.length === 0 ? (
         <div className="bg-white p-8 rounded-xl border border-gray-200 text-center shadow-sm">

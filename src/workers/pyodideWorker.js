@@ -1,27 +1,27 @@
 import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.mjs";
 
-let motorPyodide = null; 
+let motorPyodide = null;
 
 self.onmessage = async (event) => {
-  const { tipo, payload } = event.data;
+    const { tipo, payload } = event.data;
 
-  if (tipo === 'INICIAR_ANALISE') {
-    try {
-      const { dados, mapeamento } = payload;
+    if (tipo === 'INICIAR_ANALISE') {
+        try {
+            const { dados, mapeamento } = payload;
 
-      if (!motorPyodide) {
-        self.postMessage({ type: 'STATUS', mensagem: 'Iniciando ambiente analítico...', progresso: 10 });
-        motorPyodide = await loadPyodide();
-        self.postMessage({ type: 'STATUS', mensagem: 'Carregando bibliotecas matemáticas do Python...', progresso: 30 });
-        await motorPyodide.loadPackage(["pandas", "numpy", "scipy"]);
-      }
+            if (!motorPyodide) {
+                self.postMessage({ type: 'STATUS', mensagem: 'Iniciando ambiente analítico...', progresso: 10 });
+                motorPyodide = await loadPyodide();
+                self.postMessage({ type: 'STATUS', mensagem: 'Carregando bibliotecas matemáticas do Python...', progresso: 30 });
+                await motorPyodide.loadPackage(["pandas", "numpy", "scipy"]);
+            }
 
-      self.postMessage({ type: 'STATUS', mensagem: 'Passo 1/3: Processando matrizes de distância...', progresso: 50 });
+            self.postMessage({ type: 'STATUS', mensagem: 'Passo 1/3: Processando matrizes de distância...', progresso: 50 });
 
-      motorPyodide.globals.set("dados_js", dados);
-      motorPyodide.globals.set("mapeamento_js", mapeamento);
+            motorPyodide.globals.set("dados_js", dados);
+            motorPyodide.globals.set("mapeamento_js", mapeamento);
 
-      const scriptPython = `
+            const scriptPython = `
 import pandas as pd
 import numpy as np
 from scipy.stats import kruskal
@@ -65,7 +65,30 @@ for col in todas_colunas_questoes:
     df[col] = pd.to_numeric(df[col], errors='coerce')
 
 colunas_dim_agrupadas = []
+alfa_cronbach_resultados = {}
+
 for dim_nome, cols in dim_map.items():
+    # 1. Calcula o Alfa de Cronbach antes de tirar a média
+    df_itens = df[cols]
+    k = len(cols)
+    
+    if k > 1:
+        df_clean = df_itens.dropna() # Remove quem não respondeu tudo só para este teste
+        if len(df_clean) > 1:
+            item_vars = df_clean.var(ddof=1)
+            t_var = df_clean.sum(axis=1).var(ddof=1)
+            if t_var > 0:
+                alfa = (k / (k - 1)) * (1 - (item_vars.sum() / t_var))
+                alfa = max(0.0, float(alfa)) # Evita anomalias negativas
+                alfa_cronbach_resultados[dim_nome] = {"alfa": round(alfa, 3), "itens": k}
+            else:
+                alfa_cronbach_resultados[dim_nome] = {"alfa": 0.0, "itens": k}
+        else:
+            alfa_cronbach_resultados[dim_nome] = {"alfa": 0.0, "itens": k}
+    else:
+        alfa_cronbach_resultados[dim_nome] = {"alfa": "N/A", "itens": 1}
+
+    # 2. Calcula a Média da Dimensão (como antes)
     df[dim_nome] = df[cols].mean(axis=1).round(2)
     colunas_dim_agrupadas.append(dim_nome)
 
@@ -198,19 +221,20 @@ resultado = {
     "total_populacao": int(total_populacao),
     "demografia": resultados_demo,
     "dimensoes_avaliadas": colunas_dim_agrupadas,
-    "media_geral": df[colunas_dim_agrupadas].mean().round(2).to_dict()
+    "media_geral": df[colunas_dim_agrupadas].mean().round(2).to_dict(),
+    "alfa_cronbach": alfa_cronbach_resultados
 }
 
 json.dumps(resultado, cls=NumpyEncoder)
       `;
 
-      self.postMessage({ type: 'STATUS', mensagem: 'Passo 2/3: Executando PERMANOVA e testes de dispersão...', progresso: 75 });
-      const resultadoJSON = await motorPyodide.runPythonAsync(scriptPython);
-      self.postMessage({ type: 'STATUS', mensagem: 'Passo 3/3: Finalizando relatório...', progresso: 95 });
-      self.postMessage({ type: 'SUCESSO', payload: JSON.parse(resultadoJSON) });
+            self.postMessage({ type: 'STATUS', mensagem: 'Passo 2/3: Executando PERMANOVA e testes de dispersão...', progresso: 75 });
+            const resultadoJSON = await motorPyodide.runPythonAsync(scriptPython);
+            self.postMessage({ type: 'STATUS', mensagem: 'Passo 3/3: Finalizando relatório...', progresso: 95 });
+            self.postMessage({ type: 'SUCESSO', payload: JSON.parse(resultadoJSON) });
 
-    } catch (erro) {
-      self.postMessage({ type: 'ERRO', payload: String(erro) });
+        } catch (erro) {
+            self.postMessage({ type: 'ERRO', payload: String(erro) });
+        }
     }
-  }
 };
